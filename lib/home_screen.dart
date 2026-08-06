@@ -37,6 +37,8 @@ class _HomeScreenState extends State<HomeScreen> {
   String _mensagemRecebida = '';
   String _bufferBT = '';
   Timer? _speechTimeout;
+  bool _aguardandoFeedback = false;
+  String _letraReconhecida = '';
 
   // ── Labels ─────────────────────────────────────────────────
   String _label1 =
@@ -59,6 +61,7 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void dispose() {
     _clockTimer?.cancel();
+    _speechTimeout?.cancel();
     _inputSub?.cancel();
     _connection?.dispose();
     _textController.dispose();
@@ -74,10 +77,13 @@ class _HomeScreenState extends State<HomeScreen> {
     }
 
     bool ok = await _speech1.initialize();
-    await _speech2.initialize();
+    await _speech2.initialize(
+      onStatus: _onSpeech2Status,
+      onError: (error) {
+        _finalizarEscutaComErro();
+      },
+    );
     setState(() => _speechDisponivel = ok);
-
-    _clockTimer = null;
   }
 
   Future<void> _solicitarPermissoes() async {
@@ -159,17 +165,68 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  void _processarComandoBluetooth(String msg) {
-    if (msg.contains('PRESS') && !_estaOuvindo) {
-      _iniciarReconhecimento();
-    }
+  //_______________Conexão Blluetooth ________________
+  Future<void> _conectar(BluetoothDevice device) async {
+    try {
+      final conn = await _bt.connect(device.address);
 
-    if (msg.contains('RELEASE') && _estaOuvindo) {
-      _pararReconhecimento();
+      if (conn == null) {
+        setState(() {
+          _label2 = 'Falha ao conectar.';
+        });
+        return;
+      }
+
+      setState(() {
+        _connection = conn;
+        _btConectado = true;
+        _label2 = 'Bluetooth conectado.';
+      });
+
+      _inputSub?.cancel();
+
+      final input = conn.input;
+
+      if (input != null) {
+        _inputSub = input.listen((data) {
+          _bufferBT += String.fromCharCodes(data);
+
+          if (_bufferBT.contains('PRESS')) {
+            _processarComandoBluetooth('PRESS');
+            _bufferBT = '';
+          } else if (_bufferBT.contains('RELEASE')) {
+            _processarComandoBluetooth('RELEASE');
+            _bufferBT = '';
+          }
+        });
+
+        _inputSub!.onDone(() {
+          setState(() {
+            _btConectado = false;
+            _label2 = 'Bluetooth desconectado.';
+          });
+        });
+      }
+    } catch (e) {
+      setState(() {
+        _label2 = 'Falha ao conectar: $e';
+      });
     }
   }
 
-  void _iniciarReconhecimento() async {
+  void _processarComandoBluetooth(String msg) {
+    if (!_aguardandoFeedback) return;
+
+    if (msg.contains('PRESS')) {
+      _speech2GetText();
+    }
+
+    if (msg.contains('RELEASE')) {
+      _speech2.stop();
+    }
+  }
+
+  /*void _iniciarReconhecimento() async {
     await _speech1.stop();
 
     setState(() => _estaOuvindo = true);
@@ -190,9 +247,9 @@ class _HomeScreenState extends State<HomeScreen> {
         }
       },
     );
-  }
+  }*/
 
-  void _pararReconhecimento() {
+  /*void _pararReconhecimento() {
     _speech1.stop();
     setState(() => _estaOuvindo = false);
   }
@@ -240,7 +297,7 @@ class _HomeScreenState extends State<HomeScreen> {
         _label2 = 'Falha ao conectar: $e';
       });
     }
-  }
+  }*/
 
   void _enviarBT(String texto) {
     if (_btConectado && _connection != null) {
@@ -249,8 +306,8 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   void _onBotaoEnviar() {
-    String resposta = _ultimaLetraEnviada.trim().toUpperCase();
-    String correta = _letraCorreta.trim().toUpperCase();
+    //String resposta = _ultimaLetraEnviada.trim().toUpperCase();
+    //String correta = _letraCorreta.trim().toUpperCase();
 
     setState(() {
       _label2 = _btConectado
@@ -258,13 +315,7 @@ class _HomeScreenState extends State<HomeScreen> {
           : 'Falha ao enviar a mensagem. Cheque sua conexão bluetooth.';
     });
 
-    if (resposta == correta) {
-      Vibration.vibrate(duration: 200);
-      _indexAtual++;
-      _enviarProximaLetra();
-    } else {
-      Vibration.vibrate(duration: 2000);
-    }
+    _enviarBT(_letraCorreta);
   }
 
   void _onBotaoFeedback() {
@@ -285,48 +336,126 @@ class _HomeScreenState extends State<HomeScreen> {
   // void _onBotaoFalar() => _speech2GetText();
 
   void _speech2GetText() {
-    if (!_speechDisponivel) return;
+    if (!_speechDisponivel || _estaOuvindo) return;
+
+    setState(() {
+      _estaOuvindo = true;
+      _letraReconhecida = ''; // limpa o resultado da rodada anterior
+    });
+
     _speech2.listen(
+      localeId: 'pt_BR',
       onResult: (result) {
         if (result.finalResult) {
+          _speechTimeout?.cancel();
           _speech2AfterGettingText(result.recognizedWords);
         }
       },
-      localeId: 'pt_BR',
     );
+
+    _speechTimeout?.cancel();
+    _speechTimeout = Timer(const Duration(seconds: 8), () {
+      if (_estaOuvindo) {
+        _finalizarEscutaComErro();
+      }
+    });
   }
 
-  void _speech2Stop() {
-    _speech2.stop();
-    String letraCorretaUp = _letraCorreta.trim().toUpperCase();
-    String ultimaUp = _ultimaLetraEnviada.trim().toUpperCase();
-
-    if (letraCorretaUp == ultimaUp) {
-      Vibration.vibrate(duration: 200);
-      _indexAtual++;
-      _verificarFimDaPalavra();
-    } else {
-      Vibration.vibrate(duration: 2000);
+  void _onSpeech2Status(String status) {
+    if ((status == 'done' || status == 'notListening') && _estaOuvindo) {
+      _finalizarEscutaComErro();
     }
   }
 
+  void _finalizarEscutaComErro() {
+    if (!_estaOuvindo) return;
+
+    _speechTimeout?.cancel();
+    _speech2.stop();
+
+    setState(() {
+      _estaOuvindo = false;
+      _label4 = '(não reconhecido)';
+      _letraReconhecida = '';
+    });
+
+    Vibration.vibrate(duration: 2000);
+  }
+
+  /*void _speech2Stop() {
+    _speech2.stop();
+
+    setState(() {
+      _estaOuvindo = false;
+    });
+
+    String letraCorretaUp = _letraCorreta.trim().toUpperCase();
+    String resposta = _letraReconhecida.trim().toUpperCase();
+
+    if (letraCorretaUp == resposta) {
+      Vibration.vibrate(duration: 200);
+      _indexAtual++;
+      _enviarProximaLetra();
+    } else {
+      Vibration.vibrate(duration: 2000);
+    }
+  }*/
+
+  String _extrairLetra(String resultado) {
+    String texto = resultado.trim().toUpperCase();
+
+    // remove acentos comuns pra não perder "Á", "É" etc.
+    const comAcento = 'ÁÀÂÃÉÈÊÍÌÎÓÒÔÕÚÙÛÇ';
+    const semAcento = 'AAAAEEEIIIOOOOUUUC';
+    for (int i = 0; i < comAcento.length; i++) {
+      texto = texto.replaceAll(comAcento[i], semAcento[i]);
+    }
+
+    // remove a palavra "LETRA" se estiver presente
+    texto = texto.replaceAll('LETRA', '').trim();
+
+    // pega só o último "token" (última palavra/caractere falado)
+    final partes =
+        texto.split(RegExp(r'\s+')).where((p) => p.isNotEmpty).toList();
+    if (partes.isEmpty) return '';
+
+    String ultima = partes.last;
+
+    // se sobrou mais de 1 caractere (ex: "AGÁ" pro H), tenta mapear pelo nome fonético
+    const mapaFonetico = {
+      'AGA': 'H', 'AGÁ': 'H',
+      'DABLIU': 'W', 'DOIS-V': 'W', 'DOISVES': 'W',
+      'IPSILON': 'Y', 'ÍPSILON': 'Y',
+      'ERRE': 'R', 'ESSE': 'S', 'EFE': 'F',
+      'CÁ': 'K', 'CA': 'K',
+      // adicione outras conforme os erros aparecerem nos testes
+    };
+    if (mapaFonetico.containsKey(ultima)) return mapaFonetico[ultima]!;
+
+    // se já é uma letra única, retorna ela
+    if (ultima.length == 1) return ultima;
+
+    // fallback: pega o primeiro caractere
+    return ultima.substring(0, 1);
+  }
+
   void _speech2AfterGettingText(String result) {
-    setState(() => _label4 = '');
-    if (_label4.isEmpty) {
-      setState(() => _label4 = result);
-      List<String> letras = result.split('');
-      setState(() {
-        _letras = letras;
-        _indexAtual = 1;
-      });
-      if (_letras.isNotEmpty) {
-        String primeiraLetra = _letras[0];
-        setState(() {
-          _label5 = primeiraLetra;
-          _letraCorreta = ' ${primeiraLetra.toUpperCase()}';
-        });
-        _enviarBT(_label5);
-      }
+    final letraReconhecida = _extrairLetra(result);
+
+    setState(() {
+      _label4 = letraReconhecida;
+      _letraReconhecida = letraReconhecida;
+      _estaOuvindo = false;
+    });
+
+    String letraCorretaUp = _letraCorreta.trim().toUpperCase();
+
+    if (letraCorretaUp == letraReconhecida) {
+      Vibration.vibrate(duration: 200);
+      _indexAtual++;
+      _enviarProximaLetra();
+    } else {
+      Vibration.vibrate(duration: 2000);
     }
   }
 
@@ -341,6 +470,7 @@ class _HomeScreenState extends State<HomeScreen> {
       localeId: 'pt_BR',
       onResult: (result) {
         if (result.finalResult) {
+          _speech1.stop(); //encerra completamente o reconhecimento
           setState(() {
             _estaOuvindo = false;
           });
@@ -355,6 +485,7 @@ class _HomeScreenState extends State<HomeScreen> {
       _letras = palavra.toUpperCase().split('');
       _indexAtual = 0;
       _palavraCapturada = true;
+      _aguardandoFeedback = true;
     });
 
     _enviarProximaLetra();
@@ -365,6 +496,7 @@ class _HomeScreenState extends State<HomeScreen> {
       setState(() {
         _label5 = "FIM DA PALAVRA";
         _palavraCapturada = false;
+        _aguardandoFeedback = false;
       });
       return;
     }
@@ -373,13 +505,14 @@ class _HomeScreenState extends State<HomeScreen> {
 
     setState(() {
       _letraCorreta = letra;
+      _ultimaLetraEnviada = letra;
       _label5 = letra;
     });
 
     _enviarBT(letra);
   }
 
-  void _onBotaoFeedbackFisico(String letraRecebida) {
+  /*void _onBotaoFeedbackFisico(String letraRecebida) {
     if (!_palavraCapturada) return;
 
     String correta = _letraCorreta.trim().toUpperCase();
@@ -392,10 +525,10 @@ class _HomeScreenState extends State<HomeScreen> {
     } else {
       Vibration.vibrate(duration: 2000);
     }
-  }
+  }*/
 
-  void _verificarFimDaPalavra() {
-    if (_indexAtual > _letras.length) {
+  /*void _verificarFimDaPalavra() {
+    if (_indexAtual >= _letras.length) {
       setState(() {
         _label5 = 'FIM DA PALAVRA';
         _label1 = '';
@@ -403,14 +536,14 @@ class _HomeScreenState extends State<HomeScreen> {
       });
       Vibration.vibrate(duration: 700);
     } else {
-      String proxLetra = _letras[_indexAtual - 1];
+      String proxLetra = _letras[_indexAtual];
       setState(() {
         _label5 = proxLetra;
         _letraCorreta = ' ${proxLetra.toUpperCase()}';
       });
       _enviarBT(_label5);
     }
-  }
+  }*/
 
   void _onTextChanged() {
     setState(() {
@@ -545,6 +678,15 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                 ),
               ),
+              const SizedBox(height: 8),
+              // Debug: mostra exatamente o que o reconhecimento de voz
+              // captou na última tentativa, pra sabermos se o problema é
+              // a transcrição ou a comparação.
+              if (_label4.isNotEmpty)
+                Text(
+                  'Reconhecido: "$_label4"',
+                  style: const TextStyle(fontSize: 13, color: Colors.grey),
+                ),
               const Spacer(),
               Center(
                 child: GestureDetector(
