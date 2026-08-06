@@ -96,26 +96,6 @@ class _HomeScreenState extends State<HomeScreen> {
     ].request();
   }
 
-  /*void _clockTick() {
-    if (!_btConectado || _connection == null) return;
-
-    if (_mensagemRecebida.contains('PRESS') && !_estaOuvindo) {
-      setState(() {
-        _estaOuvindo = true;
-        _mensagemRecebida = '';
-      });
-      _speech2GetText();
-    }
-
-    if (_mensagemRecebida.contains('RELEASE') && _estaOuvindo) {
-      setState(() {
-        _estaOuvindo = false;
-        _mensagemRecebida = '';
-      });
-      _speech2Stop();
-    }
-  }*/
-
   Future<void> _listarDispositivos() async {
     setState(() => _label2 = 'Dispositivos Listados');
 
@@ -226,79 +206,6 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  /*void _iniciarReconhecimento() async {
-    await _speech1.stop();
-
-    setState(() => _estaOuvindo = true);
-
-    _speechTimeout?.cancel();
-
-    _speechTimeout = Timer(const Duration(seconds: 5), () {
-      _pararReconhecimento();
-    });
-
-    _speech1.listen(
-      localeId: 'pt_BR',
-      listenMode: ListenMode.confirmation,
-      onResult: (result) {
-        if (result.finalResult) {
-          setState(() => _estaOuvindo = false);
-          _processarPalavra(result.recognizedWords);
-        }
-      },
-    );
-  }*/
-
-  /*void _pararReconhecimento() {
-    _speech1.stop();
-    setState(() => _estaOuvindo = false);
-  }
-
-  Future<void> _conectar(BluetoothDevice device) async {
-    try {
-      final conn = await _bt.connect(device.address);
-
-      if (conn == null) {
-        setState(() {
-          _label2 = 'Falha ao conectar.';
-        });
-        return;
-      }
-
-      setState(() {
-        _connection = conn;
-        _btConectado = true;
-        _label2 = 'Bluetooth conectado.';
-      });
-
-      _inputSub?.cancel();
-
-      final input = conn.input;
-
-      if (input != null) {
-        _inputSub = input.listen((data) {
-          _bufferBT += String.fromCharCodes(data);
-
-          if (_bufferBT.contains('PRESS') || _bufferBT.contains('RELEASE')) {
-            _processarComandoBluetooth(_bufferBT);
-            _bufferBT = '';
-          }
-        });
-
-        _inputSub!.onDone(() {
-          setState(() {
-            _btConectado = false;
-            _label2 = 'Bluetooth desconectado.';
-          });
-        });
-      }
-    } catch (e) {
-      setState(() {
-        _label2 = 'Falha ao conectar: $e';
-      });
-    }
-  }*/
-
   void _enviarBT(String texto) {
     if (_btConectado && _connection != null) {
       _connection!.output.add(Uint8List.fromList(texto.codeUnits));
@@ -332,8 +239,6 @@ class _HomeScreenState extends State<HomeScreen> {
       localeId: 'pt_BR',
     );
   }
-
-  // void _onBotaoFalar() => _speech2GetText();
 
   void _speech2GetText() {
     if (!_speechDisponivel || _estaOuvindo) return;
@@ -381,25 +286,6 @@ class _HomeScreenState extends State<HomeScreen> {
 
     Vibration.vibrate(duration: 2000);
   }
-
-  /*void _speech2Stop() {
-    _speech2.stop();
-
-    setState(() {
-      _estaOuvindo = false;
-    });
-
-    String letraCorretaUp = _letraCorreta.trim().toUpperCase();
-    String resposta = _letraReconhecida.trim().toUpperCase();
-
-    if (letraCorretaUp == resposta) {
-      Vibration.vibrate(duration: 200);
-      _indexAtual++;
-      _enviarProximaLetra();
-    } else {
-      Vibration.vibrate(duration: 2000);
-    }
-  }*/
 
   String _extrairLetra(String resultado) {
     String texto = resultado.trim().toUpperCase();
@@ -511,39 +397,6 @@ class _HomeScreenState extends State<HomeScreen> {
 
     _enviarBT(letra);
   }
-
-  /*void _onBotaoFeedbackFisico(String letraRecebida) {
-    if (!_palavraCapturada) return;
-
-    String correta = _letraCorreta.trim().toUpperCase();
-    String resposta = letraRecebida.trim().toUpperCase();
-
-    if (resposta == correta) {
-      Vibration.vibrate(duration: 200);
-      _indexAtual++;
-      _enviarProximaLetra();
-    } else {
-      Vibration.vibrate(duration: 2000);
-    }
-  }*/
-
-  /*void _verificarFimDaPalavra() {
-    if (_indexAtual >= _letras.length) {
-      setState(() {
-        _label5 = 'FIM DA PALAVRA';
-        _label1 = '';
-        _textController.text = '';
-      });
-      Vibration.vibrate(duration: 700);
-    } else {
-      String proxLetra = _letras[_indexAtual];
-      setState(() {
-        _label5 = proxLetra;
-        _letraCorreta = ' ${proxLetra.toUpperCase()}';
-      });
-      _enviarBT(_label5);
-    }
-  }*/
 
   void _onTextChanged() {
     setState(() {
