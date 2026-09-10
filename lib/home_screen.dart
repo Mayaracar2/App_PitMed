@@ -37,8 +37,10 @@ class _HomeScreenState extends State<HomeScreen> {
   String _mensagemRecebida = '';
   String _bufferBT = '';
   Timer? _speechTimeout;
+  Timer? _trocaPalavraTimer;
   bool _aguardandoFeedback = false;
   String _letraReconhecida = '';
+  bool _entradaEhFrase = false;
 
   // ── Labels ─────────────────────────────────────────────────
   String _label1 =
@@ -46,7 +48,7 @@ class _HomeScreenState extends State<HomeScreen> {
   String _label2 = '';
   String _label3 = '';
   String _label4 = '';
-  String _label5 = 'Aqui aparecerá a letra de comparação';
+  String _label5 = 'Aqui aparecerá a letra para comparação';
 
   final TextEditingController _textController = TextEditingController();
   Timer? _clockTimer;
@@ -62,6 +64,7 @@ class _HomeScreenState extends State<HomeScreen> {
   void dispose() {
     _clockTimer?.cancel();
     _speechTimeout?.cancel();
+    _trocaPalavraTimer?.cancel();
     _inputSub?.cancel();
     _connection?.dispose();
     _textController.dispose();
@@ -337,7 +340,14 @@ class _HomeScreenState extends State<HomeScreen> {
     String letraCorretaUp = _letraCorreta.trim().toUpperCase();
 
     if (letraCorretaUp == letraReconhecida) {
-      Vibration.vibrate(duration: 200);
+      final proximoIndex = _indexAtual + 1;
+      final chegouAoSeparador =
+          proximoIndex < _letras.length && _letras[proximoIndex] == ' ';
+      final chegouAoFim = proximoIndex >= _letras.length;
+
+      if (!chegouAoSeparador && !chegouAoFim) {
+        Vibration.vibrate(duration: 200);
+      }
       _indexAtual++;
       _enviarProximaLetra();
     } else {
@@ -367,27 +377,76 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   void _processarPalavra(String palavra) {
+    final texto = palavra.trim().toUpperCase();
+    final palavras = texto.split(RegExp(r'\s+'));
+    final letras = <String>[];
+
+    for (final palavraAtual in palavras) {
+      final letrasDaPalavra = palavraAtual
+          .split('')
+          .where((caractere) => RegExp(r'[A-ZÀ-ÖØ-Þ]').hasMatch(caractere))
+          .toList();
+
+      if (letrasDaPalavra.isEmpty) continue;
+      if (letras.isNotEmpty) letras.add(' ');
+      letras.addAll(letrasDaPalavra);
+    }
+
+    if (letras.isEmpty) return;
+
+    _trocaPalavraTimer?.cancel();
+
     setState(() {
-      _letras = palavra.toUpperCase().split('');
+      _letras = letras;
       _indexAtual = 0;
       _palavraCapturada = true;
       _aguardandoFeedback = true;
+      _entradaEhFrase = letras.contains(' ');
     });
 
     _enviarProximaLetra();
   }
 
+  void _processarTextoDigitado([String? texto]) {
+    final palavra = (texto ?? _textController.text).trim();
+    if (palavra.isEmpty) return;
+
+    FocusScope.of(context).unfocus();
+    _processarPalavra(palavra);
+  }
+
   void _enviarProximaLetra() {
     if (_indexAtual >= _letras.length) {
       setState(() {
-        _label5 = "FIM DA PALAVRA";
+        _label5 = _entradaEhFrase ? 'FIM DA FRASE' : 'FIM DA PALAVRA';
         _palavraCapturada = false;
         _aguardandoFeedback = false;
       });
+
+      if (_entradaEhFrase) {
+        Vibration.vibrate(pattern: [0, 250, 150, 250, 150, 500]);
+      }
       return;
     }
 
     String letra = _letras[_indexAtual];
+
+    if (letra == ' ') {
+      _indexAtual++;
+      setState(() {
+        _label5 = 'PRÓXIMA PALAVRA';
+        _aguardandoFeedback = false;
+      });
+
+      Vibration.vibrate(pattern: [0, 180, 120, 180]);
+      _trocaPalavraTimer?.cancel();
+      _trocaPalavraTimer = Timer(const Duration(milliseconds: 800), () {
+        if (!mounted) return;
+        setState(() => _aguardandoFeedback = true);
+        _enviarProximaLetra();
+      });
+      return;
+    }
 
     setState(() {
       _letraCorreta = letra;
@@ -436,11 +495,20 @@ class _HomeScreenState extends State<HomeScreen> {
                   Expanded(
                     child: TextField(
                       controller: _textController,
-                      decoration: const InputDecoration(
+                      textInputAction: TextInputAction.done,
+                      onSubmitted: _processarTextoDigitado,
+                      decoration: InputDecoration(
                         hintText: 'Digite "letra x"',
-                        border: OutlineInputBorder(),
-                        contentPadding:
-                            EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                        border: const OutlineInputBorder(),
+                        contentPadding: const EdgeInsets.symmetric(
+                          horizontal: 10,
+                          vertical: 8,
+                        ),
+                        suffixIcon: IconButton(
+                          tooltip: 'Iniciar palavra digitada',
+                          onPressed: _processarTextoDigitado,
+                          icon: const Icon(Icons.send),
+                        ),
                       ),
                     ),
                   ),
@@ -456,19 +524,6 @@ class _HomeScreenState extends State<HomeScreen> {
                   borderRadius: BorderRadius.circular(4),
                 ),
                 child: Text(_label1, style: const TextStyle(fontSize: 14)),
-              ),
-              const SizedBox(height: 8),
-              SizedBox(
-                width: double.infinity,
-                child: ElevatedButton(
-                  onPressed: _onBotaoFeedback,
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFF3F51B5),
-                    foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(vertical: 14),
-                  ),
-                  child: const Text('Feedback', style: TextStyle(fontSize: 16)),
-                ),
               ),
               const SizedBox(height: 6),
               Row(
@@ -496,38 +551,24 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                 ],
               ),
-              const SizedBox(height: 8),
-              SizedBox(
-                width: double.infinity,
-                child: ElevatedButton(
-                  onPressed: _onBotaoEnviar,
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFF3F51B5),
-                    foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(vertical: 14),
-                  ),
-                  child: const Text('Enviar', style: TextStyle(fontSize: 16)),
-                ),
-              ),
               const SizedBox(height: 10),
-              SingleChildScrollView(
-                scrollDirection: Axis.horizontal,
-                child: Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                  decoration: BoxDecoration(
-                    color: Colors.indigo.shade50,
-                    borderRadius: BorderRadius.circular(8),
-                    border: Border.all(color: const Color(0xFF3F51B5)),
-                  ),
-                  child: Text(
-                    _label5,
-                    style: const TextStyle(
-                      fontSize: 22,
-                      fontWeight: FontWeight.bold,
-                      fontStyle: FontStyle.italic,
-                      color: Color(0xFF3F51B5),
-                    ),
+              Container(
+                width: double.infinity,
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                decoration: BoxDecoration(
+                  color: Colors.indigo.shade50,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: const Color(0xFF3F51B5)),
+                ),
+                child: Text(
+                  _label5,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.bold,
+                    fontStyle: FontStyle.italic,
+                    color: Color(0xFF3F51B5),
                   ),
                 ),
               ),
@@ -540,43 +581,51 @@ class _HomeScreenState extends State<HomeScreen> {
                   'Reconhecido: "$_label4"',
                   style: const TextStyle(fontSize: 13, color: Colors.grey),
                 ),
-              const Spacer(),
-              Center(
-                child: GestureDetector(
-                  onTap: _onBotaoFalar,
-                  child: AnimatedContainer(
-                    duration: const Duration(milliseconds: 200),
-                    width: 150,
-                    height: 80,
-                    decoration: BoxDecoration(
-                      color: _estaOuvindo
-                          ? Colors.red.shade400
-                          : const Color(0xFF3F51B5),
-                      borderRadius: BorderRadius.circular(16),
-                      boxShadow: const [
-                        BoxShadow(
-                          color: Colors.black26,
-                          blurRadius: 6,
-                          offset: Offset(0, 3),
+              const SizedBox(height: 12),
+              Expanded(
+                child: Center(
+                  child: FractionallySizedBox(
+                    widthFactor: 0.9,
+                    heightFactor: 0.9,
+                    child: GestureDetector(
+                      onTap: _onBotaoFalar,
+                      child: AnimatedContainer(
+                        duration: const Duration(milliseconds: 200),
+                        width: double.infinity,
+                        decoration: BoxDecoration(
+                          color: _estaOuvindo
+                              ? Colors.red.shade400
+                              : const Color(0xFF3F51B5),
+                          borderRadius: BorderRadius.circular(16),
+                          boxShadow: const [
+                            BoxShadow(
+                              color: Colors.black26,
+                              blurRadius: 6,
+                              offset: Offset(0, 3),
+                            ),
+                          ],
                         ),
-                      ],
-                    ),
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Icon(
-                          _estaOuvindo ? Icons.mic : Icons.mic_none,
-                          color: Colors.white,
-                          size: 30,
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Icon(
+                              _estaOuvindo ? Icons.mic : Icons.mic_none,
+                              color: Colors.white,
+                              size: 72,
+                            ),
+                            const SizedBox(height: 12),
+                            Text(
+                              _estaOuvindo ? 'Ouvindo...' : 'Toque para falar',
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 22,
+                                fontWeight: FontWeight.bold,
+                              ),
+                              textAlign: TextAlign.center,
+                            ),
+                          ],
                         ),
-                        const SizedBox(height: 4),
-                        Text(
-                          _estaOuvindo ? 'Ouvindo...' : 'Toque para falar',
-                          style: const TextStyle(
-                              color: Colors.white, fontSize: 12),
-                          textAlign: TextAlign.center,
-                        ),
-                      ],
+                      ),
                     ),
                   ),
                 ),
