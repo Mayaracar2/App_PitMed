@@ -1,10 +1,13 @@
 import 'dart:async';
 import 'dart:typed_data';
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_blue_classic/flutter_blue_classic.dart';
 import 'package:speech_to_text/speech_to_text.dart';
 import 'package:vibration/vibration.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'document_text.dart';
+import 'roleta_text.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -41,10 +44,9 @@ class _HomeScreenState extends State<HomeScreen> {
   bool _aguardandoFeedback = false;
   String _letraReconhecida = '';
   bool _entradaEhFrase = false;
+  bool _carregandoArquivo = false;
 
   // ── Labels ─────────────────────────────────────────────────
-  String _label1 =
-      'Conecte-se ao dispositivo bluetooth PitMed para enviar as mensagens ao Equipamento de comunicação.';
   String _label2 = '';
   String _label3 = '';
   String _label4 = '';
@@ -149,6 +151,7 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   //_______________Conexão Blluetooth ________________
+
   Future<void> _conectar(BluetoothDevice device) async {
     try {
       final conn = await _bt.connect(device.address);
@@ -166,7 +169,8 @@ class _HomeScreenState extends State<HomeScreen> {
         _label2 = 'Bluetooth conectado.';
       });
 
-      _inputSub?.cancel();
+      _bufferBT = '';
+      await _inputSub?.cancel();
 
       final input = conn.input;
 
@@ -174,16 +178,28 @@ class _HomeScreenState extends State<HomeScreen> {
         _inputSub = input.listen((data) {
           _bufferBT += String.fromCharCodes(data);
 
-          if (_bufferBT.contains('PRESS')) {
-            _processarComandoBluetooth('PRESS');
-            _bufferBT = '';
-          } else if (_bufferBT.contains('RELEASE')) {
-            _processarComandoBluetooth('RELEASE');
-            _bufferBT = '';
+          // Processa cada mensagem terminada em uma quebra de linha.
+          while (_bufferBT.contains('\n')) {
+            final fim = _bufferBT.indexOf('\n');
+
+            final linha =
+                _bufferBT.substring(0, fim).replaceAll('\r', '').trim();
+
+            _bufferBT = _bufferBT.substring(fim + 1);
+
+            if (linha.isEmpty) continue;
+
+            if (linha == 'PRESS') {
+              _processarComandoBluetooth('PRESS');
+            } else if (linha == 'RELEASE') {
+              _processarComandoBluetooth('RELEASE');
+            }
           }
         });
 
         _inputSub!.onDone(() {
+          if (!mounted) return;
+
           setState(() {
             _btConectado = false;
             _label2 = 'Bluetooth desconectado.';
@@ -191,6 +207,8 @@ class _HomeScreenState extends State<HomeScreen> {
         });
       }
     } catch (e) {
+      if (!mounted) return;
+
       setState(() {
         _label2 = 'Falha ao conectar: $e';
       });
@@ -290,15 +308,12 @@ class _HomeScreenState extends State<HomeScreen> {
     Vibration.vibrate(duration: 2000);
   }
 
-  String _extrairLetra(String resultado) {
-    String texto = resultado.trim().toUpperCase();
+  String _normalizarTexto(String texto) {
+    return normalizarTextoRoleta(texto);
+  }
 
-    // remove acentos comuns pra não perder "Á", "É" etc.
-    const comAcento = 'ÁÀÂÃÉÈÊÍÌÎÓÒÔÕÚÙÛÇ';
-    const semAcento = 'AAAAEEEIIIOOOOUUUC';
-    for (int i = 0; i < comAcento.length; i++) {
-      texto = texto.replaceAll(comAcento[i], semAcento[i]);
-    }
+  String _extrairLetra(String resultado) {
+    String texto = _normalizarTexto(resultado);
 
     // remove a palavra "LETRA" se estiver presente
     texto = texto.replaceAll('LETRA', '').trim();
@@ -337,7 +352,7 @@ class _HomeScreenState extends State<HomeScreen> {
       _estaOuvindo = false;
     });
 
-    String letraCorretaUp = _letraCorreta.trim().toUpperCase();
+    final letraCorretaUp = _normalizarTexto(_letraCorreta);
 
     if (letraCorretaUp == letraReconhecida) {
       final proximoIndex = _indexAtual + 1;
@@ -370,27 +385,14 @@ class _HomeScreenState extends State<HomeScreen> {
           setState(() {
             _estaOuvindo = false;
           });
-          _processarPalavra(result.recognizedWords);
+          _processarTexto(result.recognizedWords);
         }
       },
     );
   }
 
-  void _processarPalavra(String palavra) {
-    final texto = palavra.trim().toUpperCase();
-    final palavras = texto.split(RegExp(r'\s+'));
-    final letras = <String>[];
-
-    for (final palavraAtual in palavras) {
-      final letrasDaPalavra = palavraAtual
-          .split('')
-          .where((caractere) => RegExp(r'[A-ZÀ-ÖØ-Þ]').hasMatch(caractere))
-          .toList();
-
-      if (letrasDaPalavra.isEmpty) continue;
-      if (letras.isNotEmpty) letras.add(' ');
-      letras.addAll(letrasDaPalavra);
-    }
+  void _processarTexto(String texto) {
+    final letras = separarLetrasRoleta(texto);
 
     if (letras.isEmpty) return;
 
@@ -407,15 +409,59 @@ class _HomeScreenState extends State<HomeScreen> {
     _enviarProximaLetra();
   }
 
+  Future<void> _adicionarArquivoTexto() async {
+    if (_carregandoArquivo || _estaOuvindo) return;
+    setState(() => _carregandoArquivo = true);
+
+    try {
+      final resultado = await FilePicker.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: ['txt', 'pdf', 'docx'],
+        allowMultiple: false,
+        withData: true,
+      );
+      if (!mounted || resultado == null) return;
+
+      final arquivo = resultado.files.single;
+      final bytes = arquivo.bytes;
+      if (bytes == null) {
+        throw StateError('Conteúdo do arquivo indisponível');
+      }
+
+      final extensao = (arquivo.extension ?? '').toLowerCase();
+      String texto = await extrairTextoDocumento(bytes, extensao);
+      if (!mounted) return;
+      texto = texto.replaceAll('\uFEFF', '').trim();
+
+      if (separarLetrasRoleta(texto).isEmpty) {
+        setState(() => _label2 = extensao == 'pdf'
+            ? 'O PDF não contém texto legível. Se for escaneado, precisa de OCR.'
+            : 'O arquivo não contém palavras para enviar.');
+        return;
+      }
+
+      _textController.text = texto;
+      FocusScope.of(context).unfocus();
+      _processarTexto(texto);
+      setState(() => _label2 = 'Arquivo carregado: ${arquivo.name}');
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _label2 =
+          'Falha ao ler o arquivo. Verifique se está válido e sem senha.');
+    } finally {
+      if (mounted) setState(() => _carregandoArquivo = false);
+    }
+  }
+
   void _processarTextoDigitado([String? texto]) {
     final palavra = (texto ?? _textController.text).trim();
     if (palavra.isEmpty) return;
 
     FocusScope.of(context).unfocus();
-    _processarPalavra(palavra);
+    _processarTexto(palavra);
   }
 
-  void _enviarProximaLetra() {
+  Future<void> _enviarProximaLetra() async {
     if (_indexAtual >= _letras.length) {
       setState(() {
         _label5 = _entradaEhFrase ? 'FIM DA FRASE' : 'FIM DA PALAVRA';
@@ -429,10 +475,11 @@ class _HomeScreenState extends State<HomeScreen> {
       return;
     }
 
-    String letra = _letras[_indexAtual];
+    final letra = _letras[_indexAtual];
 
     if (letra == ' ') {
       _indexAtual++;
+
       setState(() {
         _label5 = 'PRÓXIMA PALAVRA';
         _aguardandoFeedback = false;
@@ -440,18 +487,26 @@ class _HomeScreenState extends State<HomeScreen> {
 
       Vibration.vibrate(pattern: [0, 180, 120, 180]);
       _trocaPalavraTimer?.cancel();
-      _trocaPalavraTimer = Timer(const Duration(milliseconds: 800), () {
-        if (!mounted) return;
-        setState(() => _aguardandoFeedback = true);
-        _enviarProximaLetra();
-      });
+
+      _trocaPalavraTimer = Timer(
+        const Duration(milliseconds: 800),
+        () {
+          if (!mounted) return;
+          setState(() => _aguardandoFeedback = true);
+          _enviarProximaLetra();
+        },
+      );
       return;
     }
+
+    if (!mounted) return;
 
     setState(() {
       _letraCorreta = letra;
       _ultimaLetraEnviada = letra;
       _label5 = letra;
+      _aguardandoFeedback = true;
+      _label2 = 'Letra enviada para a roleta.';
     });
 
     _enviarBT(letra);
@@ -459,7 +514,6 @@ class _HomeScreenState extends State<HomeScreen> {
 
   void _onTextChanged() {
     setState(() {
-      _label1 = _textController.text;
       _label3 = _ultimaLetraEnviada;
     });
   }
@@ -515,15 +569,24 @@ class _HomeScreenState extends State<HomeScreen> {
                 ],
               ),
               const SizedBox(height: 10),
-              Container(
+              SizedBox(
                 width: double.infinity,
                 height: 70,
-                padding: const EdgeInsets.all(8),
-                decoration: BoxDecoration(
-                  border: Border.all(color: Colors.grey.shade300),
-                  borderRadius: BorderRadius.circular(4),
+                child: OutlinedButton.icon(
+                  onPressed: _carregandoArquivo || _estaOuvindo
+                      ? null
+                      : _adicionarArquivoTexto,
+                  icon: _carregandoArquivo
+                      ? const SizedBox(
+                          width: 20,
+                          height: 20,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.upload_file),
+                  label: Text(_carregandoArquivo
+                      ? 'Carregando arquivo...'
+                      : 'Adicionar arquivo (TXT, PDF ou DOCX)'),
                 ),
-                child: Text(_label1, style: const TextStyle(fontSize: 14)),
               ),
               const SizedBox(height: 6),
               Row(
